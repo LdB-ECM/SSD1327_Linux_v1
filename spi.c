@@ -3,6 +3,7 @@
 {       Filename: spi.c														}
 {       Copyright(c): Leon de Boer(LdB) 2019, 2020							}
 {       Version: 1.10														}
+{		Release under MIT license (https://opensource.org/licenses/MIT)     }
 {																			}
 {***************************************************************************}
 {                                                                           }
@@ -44,8 +45,9 @@ struct spi_device
 	struct {
         uint16_t spi_bitsPerWord: 8;			// SPI bits per word
         uint16_t spi_num : 4;					// SPI device table number
-        uint16_t _reserved: 2;        			// reserved
+        uint16_t _reserved: 1;        			// reserved
 		uint16_t uselocks : 1;					// Locks to be used for access
+		uint16_t initializing : 1;				// SPI is initializing settings
 		uint16_t inuse : 1;						// In use flag
 	};
 };
@@ -76,7 +78,7 @@ SPI_HANDLE SpiOpenPort (uint8_t spi_devicenum, uint8_t bit_exchange_size, uint32
 		int fd = open(&buf[0], O_RDWR);								// Open the SPI device
 		if (fd >= 0)												// SPI device opened correctly
 		{
-                        spi_ptr->inuse =  1;
+			spi_ptr->initializing = 1;								// Set initializing flag to allow setup access
 			spi_ptr->spi_fd = fd;									// Hold the file device to SPI
 			if (SpiSetMode(spi_ptr, mode) &&						// Set spi mode
 				SpiSetBitsPerWord(spi_ptr, bit_exchange_size) &&	// Set spi bits per exchange
@@ -84,8 +86,10 @@ SPI_HANDLE SpiOpenPort (uint8_t spi_devicenum, uint8_t bit_exchange_size, uint32
 				SpiSetBitOrder(spi_ptr, SPI_BIT_ORDER_MSBFIRST) &&  // Set spi MSB bit order
 				SpiSetChipSelect(spi_ptr, SPI_CS_Mode_LOW))			// Set SPI chip select low
 			{
+				spi_ptr->inuse = 1;									// Set in use flag
 				spi = spi_ptr;										// Return SPI handle
 			} else spi_ptr-> inuse = 0;
+			spi_ptr->initializing = 0;								// Clear initializing flag
 		}
 	}
 	return(spi);													// Return SPI handle result			
@@ -119,7 +123,7 @@ bool SpiClosePort (SPI_HANDLE spiHandle)
 .--------------------------------------------------------------------------*/
 bool SpiSetMode (SPI_HANDLE spiHandle, uint16_t mode)
 {
-	if (spiHandle && spiHandle->inuse)								// SPI handle valid and SPI handle is in use
+	if (spiHandle && (spiHandle->inuse || spiHandle->initializing))	// SPI handle valid and SPI handle is in use or initializing
 	{	
 		mode &= all_mode_bits;										// Ensures mode is only valid mod bits
 		spiHandle->mode &= ~all_mode_bits;							// Clear all existing mode bits
@@ -138,7 +142,7 @@ bool SpiSetMode (SPI_HANDLE spiHandle, uint16_t mode)
 .--------------------------------------------------------------------------*/
 bool SpiSetSpeed (SPI_HANDLE spiHandle, uint32_t speed)
 {
-	if (spiHandle && spiHandle->inuse &&  speed > 0)				// SPI handle valid and SPI handle is in use
+	if (spiHandle && (spiHandle->inuse || spiHandle->initializing) && speed > 0)// SPI handle valid and SPI handle is in use or initializing
 	{
 		uint32_t temp = speed;										// Transfer requested speed
 		if ((ioctl(spiHandle->spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &temp) >= 0) && // Set write speed
@@ -157,7 +161,7 @@ bool SpiSetSpeed (SPI_HANDLE spiHandle, uint32_t speed)
 .--------------------------------------------------------------------------*/
 bool SpiSetChipSelect (SPI_HANDLE spiHandle, SPIChipSelect CS_Mode)
 {
-	if (spiHandle && spiHandle->inuse)								// SPI handle valid and SPI handle is in use
+	if (spiHandle && (spiHandle->inuse || spiHandle->initializing))		// SPI handle valid and SPI handle is in use or initializing
 	{
 		switch (CS_Mode)
 		{
@@ -189,7 +193,7 @@ bool SpiSetChipSelect (SPI_HANDLE spiHandle, SPIChipSelect CS_Mode)
 .--------------------------------------------------------------------------*/
 bool SpiSetBitOrder (SPI_HANDLE spiHandle, SPIBitOrder Order)
 {
-	if (spiHandle && spiHandle->inuse)								// SPI handle valid and SPI handle is in use
+	if (spiHandle && (spiHandle->inuse || spiHandle->initializing))		// SPI handle valid and SPI handle is in use or initializing
 	{
 		switch (Order)
 		{
@@ -216,7 +220,7 @@ bool SpiSetBitOrder (SPI_HANDLE spiHandle, SPIBitOrder Order)
 .--------------------------------------------------------------------------*/
 bool SpiSetBitsPerWord(SPI_HANDLE spiHandle, uint8_t bits)
 {
-	if (spiHandle && spiHandle->inuse && bits > 0)					// SPI handle valid and SPI handle is in use
+	if (spiHandle && (spiHandle->inuse || spiHandle->initializing) && bits > 0)// SPI handle valid and SPI handle is in use or initializing
 	{
 		uint8_t spi_bitsPerWord = bits;								// Create a temp variable
 		if ((ioctl(spiHandle->spi_fd, SPI_IOC_WR_BITS_PER_WORD, &spi_bitsPerWord) >= 0) &&
@@ -233,69 +237,90 @@ bool SpiSetBitsPerWord(SPI_HANDLE spiHandle, uint8_t bits)
 /*-[ SpiWriteAndRead ]------------------------------------------------------}
 . Given a valid SPI handle and valid data pointers the call will send and
 . receive data to and from the buffer pointers. As the write occurs before
-. the read the buffer pointers can be the same buffer space.
-. RETURN: >= 0 transfer count for success, < 0 for any error  
+. the read the buffer pointers can be the same buffer space. If only writing 
+. RxData can be set to NULL, if only reading TxData can be set to NULL.
+. RETURN: true for success, false for any failure 
 .--------------------------------------------------------------------------*/
-int SpiWriteAndRead (SPI_HANDLE spiHandle, uint8_t* TxData, uint8_t* RxData, uint16_t Length, bool LeaveCsLow)
+bool SpiWriteAndRead (SPI_HANDLE spiHandle, uint8_t* TxData, uint8_t* RxData, uint16_t Length, bool LeaveCsLow)
 {
-	int retVal = -1;												// Preset -1
-	if (spiHandle && spiHandle->inuse)								// SPI handle valid and SPI handle is in use
+	if (spiHandle && spiHandle->inuse && (TxData || RxData) && Length > 0)// SPI handle valid, SPI handle is in use and we have a data to transfer
 	{
+		int retVal = -1;
 		if (spiHandle->uselocks)									// Using locks
 		{
 			sem_wait(&spiHandle->lock);								// Take semaphore
 		}
-		struct spi_ioc_transfer spi = { 0 };
-		spi.tx_buf = (unsigned long)TxData;							// transmit from "data"
-		spi.rx_buf = (unsigned long)RxData;							// receive into "data"
-		spi.len = Length;											// length of data to tx/rx
-		spi.delay_usecs = 0;										// Delay before sending
-		spi.speed_hz = spiHandle->spi_speed;						// Speed for transfer
-		spi.bits_per_word = spiHandle->spi_bitsPerWord;				// Bits per exchange
-		spi.cs_change = LeaveCsLow;									// 0=Set CS high after a transfer, 1=leave CS set low
-		retVal = ioctl(spiHandle->spi_fd, SPI_IOC_MESSAGE(1), &spi);// Execute exchange
+		do {
+			uint16_t count = Length;								// Transfer length to count
+			if (count > 4096) count = 4096;							// Maximum transfer is 4096 in one block
+			struct spi_ioc_transfer spi = { 0 };
+			spi.tx_buf = (unsigned long)TxData;						// transmit from "data"
+			spi.rx_buf = (unsigned long)RxData;						// receive into "data"
+			spi.len = count;										// length of data to tx/rx
+			spi.delay_usecs = 0;									// Delay before sending
+			spi.speed_hz = spiHandle->spi_speed;					// Speed for transfer
+			spi.bits_per_word = spiHandle->spi_bitsPerWord;			// Bits per exchange
+			spi.cs_change = LeaveCsLow;								// 0=Set CS high after a transfer, 1=leave CS set low
+			retVal = ioctl(spiHandle->spi_fd, SPI_IOC_MESSAGE(1), &spi);// Execute exchange
+			Length -= count;										// Subtract the bytes transferred
+			if (Length > 0)											// Still data to send
+			{
+				TxData += count;									// Increment the TX pointer
+				RxData += count;									// Increment the RX pointer
+			}
+		} while (Length > 0 && retVal >= 0);						// Loop until all transferred or error occurs
 		if (spiHandle->uselocks)									// Using locks
 		{
-			sem_post(&spiHandle->lock);							    // Give semaphore
+			sem_post(&spiHandle->lock);								// Give semaphore
 		}
+		if (retVal >= 0) return true;								// Return sucess
 	}
-	return retVal;													// Return result
+	return false;													// Return failure
 }
 
 /*-[ SpiWriteBlockRepeat ]--------------------------------------------------}
 . Given a valid SPI handle and valid data pointers the call will send the
-. data block repeat times. It is used to speed up things like writing to SPI
-. LCD screen with areas a fixed colour.
-. RETURN: >= 0 blocks transfered for success, < 0 for any error  
+. data block count times. It is used to speed up things like writing LCD
+. SPI screen areas a fixed colour.
+. RETURN: true for success, false for any failure
 .--------------------------------------------------------------------------*/
-int SpiWriteBlockRepeat (SPI_HANDLE spiHandle, uint8_t* TxBlock, uint16_t TxBlockLen, uint32_t Repeats, bool LeaveCsLow)
+bool SpiWriteBlockRepeat (SPI_HANDLE spiHandle, uint8_t* TxBlock, uint16_t TxBlockLen, uint32_t Repeats, bool LeaveCsLow)
 {
-	int retVal = -1;												// Preset -1
-	if (spiHandle && TxBlock && spiHandle->inuse)					// SPI handle and TxBlock valid and SPI handle is in use
+	if (spiHandle && spiHandle->inuse && TxBlock && TxBlockLen > 0)	// SPI handle and TxBlock valid and SPI handle is in use
 	{
+		int retVal = -1;											// Preset -1
 		if (spiHandle->uselocks)									// Using locks
 		{
 			sem_wait(&spiHandle->lock);								// Take semaphore
 		}
-		struct spi_ioc_transfer spi = { 0 };
-		spi.tx_buf = (unsigned long)TxBlock;						// transmit from "data"
-		spi.rx_buf = (unsigned long)0;          					// receive into "data"
-		spi.len = TxBlockLen;										// length of data to tx/rx
-		spi.delay_usecs = 0;										// Delay before sending
-		spi.speed_hz = spiHandle->spi_speed;						// Speed for transfer
-		spi.bits_per_word = spiHandle->spi_bitsPerWord;				// Bits per exchange
-		spi.cs_change = LeaveCsLow;									// 0=Set CS high after a transfer, 1=leave CS set low
-        retVal = 0;                                                 // Zero retVal 
-        uint32_t j;
-        for (j = 0; j < Repeats && retVal == TxBlockLen; j++)       // For each block repeat
-        {    
-            retVal = ioctl(spiHandle->spi_fd, SPI_IOC_MESSAGE(1), &spi);// Execute exchange
-        }
-        retVal = j;                                                 // Return block count
+		for (uint32_t j = 0; j < Repeats; j++)						// For each block repeat
+		{
+			uint16_t LoopCnt = TxBlockLen;							// We need to transfer Length bytes each loop
+			uint8_t* TxData = TxBlock;								// We need to reset pointer each loop
+			do {
+				uint16_t count = LoopCnt;							// Transfer loop length to count
+				if (count > 4096) count = 4096;						// Maximum transfer is 4096 in one block
+				struct spi_ioc_transfer spi = { 0 };
+				spi.tx_buf = (unsigned long)TxData;					// Transmit from "data"
+				spi.rx_buf = (unsigned long)0;          			// Receive nothing
+				spi.len = count;									// Length of data to tx/rx
+				spi.delay_usecs = 0;								// Delay before sending
+				spi.speed_hz = spiHandle->spi_speed;				// Speed for transfer
+				spi.bits_per_word = spiHandle->spi_bitsPerWord;		// Bits per exchange
+				spi.cs_change = LeaveCsLow;							// 0=Set CS high after a transfer, 1=leave CS set low
+				retVal = ioctl(spiHandle->spi_fd, SPI_IOC_MESSAGE(1), &spi);// Execute exchange
+				LoopCnt -= count;									// Subtract the bytes transferred
+				if (LoopCnt > 0)									// Still data to send
+				{
+					TxData += count;								// Increment the TX pointer
+				}
+			} while (LoopCnt > 0 && retVal >= 0);					// Loop until all transferred or error occurs
+		}
 		if (spiHandle->uselocks)									// Using locks
 		{
 			sem_post(&spiHandle->lock);							    // Give semaphore
 		}
+		if (retVal >= 0) return true;								// Return sucess
 	}
-	return retVal;													// Return result
+	return false;													// Return failure
 }

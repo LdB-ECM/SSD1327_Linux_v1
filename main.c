@@ -53,6 +53,28 @@ static void* counttask (void* param)
 	return 0;
 }
 
+static void* bartask(void* param)
+{
+	HDC Dc = GetDC();	// Fetch DC for this task
+	int dir = 1;
+	uint16_t i = 2;
+	while (1)
+	{
+		SetDCBrushColor(Dc, 4);
+		sem_wait(&lock);
+		Rectangle(Dc, 0, 96, i, 110);
+		sem_post(&lock);
+		SetDCBrushColor(Dc, 0);
+		sem_wait(&lock);
+		Rectangle(Dc, i, 96, 128, 110);
+		sem_post(&lock);
+		usleep(33333);
+		i = i + 2*dir;
+		if (i == 126 || i == 2) dir = -dir;
+	}
+	ReleaseDC(Dc);
+	return 0;
+}
 
 
 static GPIO_HANDLE gpio = 0;
@@ -101,16 +123,17 @@ int main (void)
         
 	sem_init(&lock, 0, 1);
 
-	pthread_t taskhandle[2];
+	pthread_t taskhandle[3];
 	pthread_create(&taskhandle[0], NULL, ticktask, NULL);
 	pthread_create(&taskhandle[1], NULL, counttask, NULL);
+	pthread_create(&taskhandle[2], NULL, bartask, NULL);
 
 	getchar();														// Wait of a keypress
 
-	pthread_cancel(taskhandle[0]);
-	pthread_cancel(taskhandle[1]);
-    pthread_join(taskhandle[0], NULL);
-    pthread_join(taskhandle[1], NULL);
+	for (int i = 0; i < 3; i++)
+		pthread_cancel(taskhandle[i]);
+	for (int i = 0; i < 3; i++)
+		pthread_join(taskhandle[i], NULL);
 
 	sem_destroy(&lock);
     SpiClosePort(spi);

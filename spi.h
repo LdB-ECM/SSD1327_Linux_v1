@@ -8,8 +8,9 @@ extern "C" {									// Put extern C directive wrapper around
 /*++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++}
 {																			}
 {       Filename: spi.h														}
-{       Copyright(c): Leon de Boer(LdB) 2019, 2020							}
+{       Copyright: Leon de Boer(LdB) 2019, 2020		    					}
 {       Version: 1.10														}
+{		Release under MIT license (https://opensource.org/licenses/MIT)     }
 {																			}
 {***************************************************************************}
 {                                                                           }
@@ -88,18 +89,19 @@ bool SpiSetBitsPerWord (SPI_HANDLE spiHandle, uint8_t bits);
 /*-[ SpiWriteAndRead ]------------------------------------------------------}
 . Given a valid SPI handle and valid data pointers the call will send and
 . receive data to and from the buffer pointers. As the write occurs before
-. the read the buffer pointers can be the same buffer space.
-. RETURN: >= 0 transfer count for success, < 0 for any error
+. the read the buffer pointers can be the same buffer space. If only writing
+. RxData can be set to NULL, if only reading TxData can be set to NULL.
+. RETURN: true for success, false for any failure
 .--------------------------------------------------------------------------*/
-int SpiWriteAndRead (SPI_HANDLE spiHandle, uint8_t* TxData, uint8_t* RxData, uint16_t Length, bool LeaveCsLow);
+bool SpiWriteAndRead (SPI_HANDLE spiHandle, uint8_t* TxData, uint8_t* RxData, uint16_t Length, bool LeaveCsLow);
 
 /*-[ SpiWriteBlockRepeat ]--------------------------------------------------}
 . Given a valid SPI handle and valid data pointers the call will send the
 . data block count times. It is used to speed up things like writing LCD
 . SPI screen areas a fixed colour.
-. RETURN: >= 0 blocks transfered for success, < 0 for any error  
+. RETURN: true for success, false for any failure
 .--------------------------------------------------------------------------*/
-int SpiWriteBlockRepeat (SPI_HANDLE spiHandle, uint8_t* TxBlock, uint16_t TxBlockLen, uint32_t Repeats, bool LeaveCsLow);
+bool SpiWriteBlockRepeat (SPI_HANDLE spiHandle, uint8_t* TxBlock, uint16_t TxBlockLen, uint32_t Repeats, bool LeaveCsLow);
 
 #ifdef __cplusplus								// If we are including to a C++ file
 }												// Close the extern C directive wrapper
